@@ -33,7 +33,7 @@ def build_resources():
 OPTIONS = {
     "argv_emulation": False,
     "packages": ["objc", "AppKit", "Foundation"],
-    "includes": ["transcriber"],
+    "includes": ["transcriber", "imp"],
     "resources": build_resources(),
     "plist": {
         "CFBundleName": "STT80",
