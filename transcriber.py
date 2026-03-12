@@ -155,8 +155,14 @@ class Transcriber:
         if env_path and os.path.exists(env_path):
             return os.path.abspath(env_path)
 
+        base_dir = runtime_base_dir()
+        executable_dir = os.path.dirname(os.path.abspath(sys.executable))
+
         candidate_paths = [
-            os.path.join(runtime_base_dir(), "vendor", "whisper.cpp", "build", "bin", "whisper-cli"),
+            os.path.join(base_dir, "whisper-cli"),
+            os.path.join(base_dir, "bin", "whisper-cli"),
+            os.path.join(base_dir, "vendor", "whisper.cpp", "build", "bin", "whisper-cli"),
+            os.path.join(executable_dir, "whisper-cli"),
             os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor", "whisper.cpp", "build", "bin", "whisper-cli"),
             os.path.join(os.path.abspath(os.getcwd()), "vendor", "whisper.cpp", "build", "bin", "whisper-cli"),
         ]

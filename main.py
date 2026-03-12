@@ -499,6 +499,7 @@ class AppDelegate(AppKit.NSObject):
             self._update_status(f"Engine error: {exc}")
             self._update_text(
                 "Unable to start local Whisper backend.\n\n"
+                f"Details: {exc}\n\n"
                 "Quick checks:\n"
                 "- pip install whisper-cpp-python\n"
                 "- ffmpeg installed (brew install ffmpeg)\n"
