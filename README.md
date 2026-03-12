@@ -104,24 +104,6 @@ Outputs:
 - `release/STT80-macos-universal-v0.1.0.zip`
 - `release/STT80-macos-universal-v0.1.0.zip.sha256`
 
-## Publish on GitHub
-
-Recommended to commit source + scripts only (not large model binaries):
-
-- commit code, scripts, README
-- keep models downloaded locally with `download_models.sh`
-- each user can build locally with `./make_standalone.sh`
-
-Automated macOS build workflow is included:
-
-- `.github/workflows/build-standalone.yml`
-
-The workflow builds `dist/STT80.app`, packages a zip, and uploads artifacts.
-
-For manual release flow, use:
-
-- `RELEASE_CHECKLIST.md`
-
 ## Benchmark Transcription Quality
 
 Dataset format:
