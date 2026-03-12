@@ -4,7 +4,7 @@ import os
 import re
 import time
 
-from transcriber import Transcriber, model_search_dirs, resolve_model_path
+from transcriber import Transcriber, model_search_dirs, normalize_language, resolve_model_path
 
 
 MODEL_FILES = {
@@ -80,7 +80,7 @@ def collect_dataset(dataset_dir):
     return items
 
 
-def benchmark_model(model_key, dataset_items, base_dir):
+def benchmark_model(model_key, dataset_items, language):
     model_file = MODEL_FILES[model_key]
     model_path = resolve_model_path(model_file)
     if not model_path:
@@ -93,7 +93,7 @@ def benchmark_model(model_key, dataset_items, base_dir):
         }
 
     try:
-        transcriber = Transcriber(model_path=model_path)
+        transcriber = Transcriber(model_path=model_path, language=language)
     except Exception as exc:
         return {
             "model": model_key,
@@ -137,6 +137,7 @@ def print_report(report):
     print("\n=== STT80 BENCHMARK REPORT ===\n")
     print(f"Dataset files: {report['dataset_count']}")
     print(f"Dataset dir:   {report['dataset_dir']}\n")
+    print(f"Language:      {report['language']}\n")
 
     valid_runs = [r for r in report["models"] if "error" not in r]
     valid_runs.sort(key=lambda r: r["avg_wer"])
@@ -171,13 +172,18 @@ def parse_args():
         default="",
         help="Optional path to save full JSON report.",
     )
+    parser.add_argument(
+        "--language",
+        default=os.environ.get("STT80_LANGUAGE", "auto"),
+        help="Language code for transcription (e.g. en, it, es) or 'auto'.",
+    )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
     dataset_dir = os.path.abspath(args.dataset_dir)
-    base_dir = os.path.dirname(os.path.abspath(__file__))
+    language = normalize_language(args.language)
 
     if not os.path.isdir(dataset_dir):
         raise SystemExit(f"Dataset dir not found: {dataset_dir}")
@@ -196,12 +202,13 @@ def main():
     report = {
         "dataset_dir": dataset_dir,
         "dataset_count": len(dataset_items),
+        "language": language,
         "models": [],
     }
 
     for model_key in models:
         print(f"Running model '{model_key}'...")
-        result = benchmark_model(model_key, dataset_items, base_dir)
+        result = benchmark_model(model_key, dataset_items, language)
         report["models"].append(result)
 
     print_report(report)

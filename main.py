@@ -4,12 +4,25 @@ import threading
 import AppKit
 import objc
 
-from transcriber import Transcriber, model_search_dirs, resolve_model_path
+from transcriber import Transcriber, model_search_dirs, normalize_language, resolve_model_path
 
 
 WINDOW_GLASS_ALPHA = 0.72
 PANEL_GLASS_ALPHA = 0.62
 BACKGROUND_GLASS_ALPHA = 0.82
+
+SUPPORTED_AUDIO_EXTENSIONS = (
+    ".m4a",
+    ".wav",
+    ".mp3",
+    ".flac",
+    ".ogg",
+    ".opus",
+    ".aac",
+    ".mp4",
+    ".m4b",
+)
+OPEN_PANEL_FILE_TYPES = [ext[1:] for ext in SUPPORTED_AUDIO_EXTENSIONS]
 
 
 def window_style_mask():
@@ -49,7 +62,7 @@ class LiquidRootView(AppKit.NSView):
             file_url = AppKit.NSURL.URLFromPasteboard_(pasteboard)
             if file_url:
                 path = str(file_url.path())
-                if path.lower().endswith(".m4a") and self.delegate:
+                if path.lower().endswith(SUPPORTED_AUDIO_EXTENSIONS) and self.delegate:
                     self.delegate.handleDroppedFile_(path)
                     return True
         return False
@@ -126,6 +139,8 @@ class AppDelegate(AppKit.NSObject):
     statusField = None
     modelPopup = None
     modelLabel = None
+    languageLabel = None
+    languageField = None
     titleField = None
     subtitleField = None
     hintField = None
@@ -135,6 +150,7 @@ class AppDelegate(AppKit.NSObject):
     transcriber = None
 
     selectedModelKey = "small"
+    selectedLanguage = normalize_language(os.environ.get("STT80_LANGUAGE", "auto"))
     modelOptions = {
         "tiny": "ggml-tiny.bin",
         "base": "ggml-base.bin",
@@ -201,7 +217,7 @@ class AppDelegate(AppKit.NSObject):
         self.subtitleField.setDrawsBackground_(False)
         self.subtitleField.setFont_(AppKit.NSFont.fontWithName_size_("SF Pro Text", 12) or AppKit.NSFont.systemFontOfSize_(12))
         self.subtitleField.setTextColor_(AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.72, 0.82, 0.96, 1.0))
-        self.subtitleField.setStringValue_("Drop an Italian .m4a file or use Open...")
+        self.subtitleField.setStringValue_("Transcribe local audio in any language (auto or code like en/es/it).")
         self.headerPanel.addSubview_(self.subtitleField)
 
         self.modelLabel = AppKit.NSTextField.alloc().initWithFrame_(AppKit.NSMakeRect(446, 47, 78, 16))
@@ -240,6 +256,25 @@ class AppDelegate(AppKit.NSObject):
         self.statusField.setAutoresizingMask_(AppKit.NSViewMinXMargin | AppKit.NSViewMaxYMargin | AppKit.NSViewWidthSizable)
         self.headerPanel.addSubview_(self.statusField)
 
+        self.languageLabel = AppKit.NSTextField.alloc().initWithFrame_(AppKit.NSMakeRect(0, 16, 68, 16))
+        self.languageLabel.setEditable_(False)
+        self.languageLabel.setBordered_(False)
+        self.languageLabel.setDrawsBackground_(False)
+        self.languageLabel.setFont_(AppKit.NSFont.fontWithName_size_("SF Pro Text Semibold", 11) or AppKit.NSFont.systemFontOfSize_(11))
+        self.languageLabel.setTextColor_(AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.72, 0.82, 0.96, 1.0))
+        self.languageLabel.setStringValue_("LANG")
+        self.headerPanel.addSubview_(self.languageLabel)
+
+        self.languageField = AppKit.NSTextField.alloc().initWithFrame_(AppKit.NSMakeRect(0, 12, 104, 22))
+        self.languageField.setStringValue_(self.selectedLanguage)
+        if hasattr(self.languageField, "setPlaceholderString_"):
+            self.languageField.setPlaceholderString_("auto")
+        self.languageField.setTarget_(self)
+        self.languageField.setAction_(b"languageChanged:")
+        if hasattr(self.languageField, "setSendsActionOnEndEditing_"):
+            self.languageField.setSendsActionOnEndEditing_(True)
+        self.headerPanel.addSubview_(self.languageField)
+
         self.hintField = AppKit.NSTextField.alloc().initWithFrame_(AppKit.NSMakeRect(22, self.transcriptPanel.bounds().size.height - 34, self.transcriptPanel.bounds().size.width - 44, 16))
         self.hintField.setEditable_(False)
         self.hintField.setBordered_(False)
@@ -247,7 +282,7 @@ class AppDelegate(AppKit.NSObject):
         self.hintField.setAutoresizingMask_(AppKit.NSViewWidthSizable | AppKit.NSViewMinYMargin)
         self.hintField.setFont_(AppKit.NSFont.fontWithName_size_("SF Pro Text Semibold", 12) or AppKit.NSFont.systemFontOfSize_(12))
         self.hintField.setTextColor_(AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.76, 0.86, 0.98, 1.0))
-        self.hintField.setStringValue_("Drop Zone: drop your .m4a file here")
+        self.hintField.setStringValue_("Drop Zone: .m4a .wav .mp3 .flac .ogg .opus .aac .mp4 .m4b")
         self.transcriptPanel.addSubview_(self.hintField)
 
         self.scrollView = AppKit.NSScrollView.alloc().initWithFrame_(
@@ -271,7 +306,7 @@ class AppDelegate(AppKit.NSObject):
         self.textView.setString_(
             "STT80 READY\n\n"
             "Recommended model: small (best speed/quality balance)\n\n"
-            "1) Drop an Italian .m4a voice note\n"
+            "1) Set language to 'auto' or a language code (en/es/it/fr/de/...)\n"
             "2) Wait for local transcription\n"
             "3) Get transcript + estimated 2-speaker turns"
         )
@@ -306,14 +341,20 @@ class AppDelegate(AppKit.NSObject):
         open_x = copy_x - spacing - button_width
         popup_x = open_x - 12.0 - 128.0
         label_x = popup_x - 68.0
+        language_field_width = 104.0
+        language_label_width = 54.0
+        language_field_x = save_x - 2.0 - language_field_width
+        language_label_x = language_field_x - 6.0 - language_label_width
 
         self.modelLabel.setFrame_(AppKit.NSMakeRect(label_x, 47, 60, 16))
         self.modelPopup.setFrame_(AppKit.NSMakeRect(popup_x, 40, 128, 26))
         self.openButton.setFrame_(AppKit.NSMakeRect(open_x, 40, button_width, 26))
         self.copyButton.setFrame_(AppKit.NSMakeRect(copy_x, 40, button_width, 26))
         self.saveButton.setFrame_(AppKit.NSMakeRect(save_x, 40, button_width, 26))
+        self.languageLabel.setFrame_(AppKit.NSMakeRect(language_label_x, 16, language_label_width, 16))
+        self.languageField.setFrame_(AppKit.NSMakeRect(language_field_x, 12, language_field_width, 22))
 
-        status_width = max(180.0, open_x - 14.0 - label_x)
+        status_width = max(140.0, language_label_x - 14.0 - label_x)
         self.statusField.setFrame_(AppKit.NSMakeRect(label_x, 16, status_width, 16))
 
     def windowDidResize_(self, notification):
@@ -355,8 +396,10 @@ class AppDelegate(AppKit.NSObject):
                         f"Missing model: {model_file}\n\nSearched in:\n{searched}"
                     )
 
-            self.transcriber = Transcriber(model_path=model_path)
-            self._update_status(f"Engine ready ({self.selectedModelKey}, {self.transcriber.backend_label}).")
+            self.transcriber = Transcriber(model_path=model_path, language=self.selectedLanguage)
+            self._update_status(
+                f"Engine ready ({self.selectedModelKey}, {self.transcriber.backend_label}, lang: {self.transcriber.language_label})."
+            )
         except Exception as exc:
             self.transcriber = None
             self._update_status(f"Engine error: {exc}")
@@ -368,6 +411,18 @@ class AppDelegate(AppKit.NSObject):
                 "- place ggml-<tiny|base|small|medium-q5|medium>.bin in project/models or ~/Library/Application Support/STT80/models\n"
                 "- for medium-q5: build whisper-cli via ./setup_whisper_cli.sh"
             )
+
+    def languageChanged_(self, sender):
+        language = normalize_language(str(sender.stringValue()))
+        self.selectedLanguage = language
+        self.languageField.setStringValue_(language)
+
+        if self.transcriber:
+            self.transcriber.set_language(language)
+            self._update_status(f"Language set to {self.transcriber.language_label}.")
+        else:
+            label = "auto-detect" if language == "auto" else language
+            self._update_status(f"Language set to {label}. It will apply when engine is ready.")
 
     def modelSelectionChanged_(self, sender):
         selected_title = str(sender.titleOfSelectedItem())
@@ -392,7 +447,7 @@ class AppDelegate(AppKit.NSObject):
         panel.setCanChooseDirectories_(False)
         panel.setAllowsMultipleSelection_(False)
         if hasattr(panel, "setAllowedFileTypes_"):
-            panel.setAllowedFileTypes_(["m4a"])
+            panel.setAllowedFileTypes_(OPEN_PANEL_FILE_TYPES)
 
         result = panel.runModal()
         ok_value = getattr(AppKit, "NSModalResponseOK", getattr(AppKit, "NSFileHandlingPanelOKButton", 1))
@@ -451,20 +506,30 @@ class AppDelegate(AppKit.NSObject):
         self.modelPopup.selectItemWithTitle_(str(model_key))
 
     def handleDroppedFile_(self, file_path):
+        normalized_path = str(file_path or "")
+        if not normalized_path.lower().endswith(SUPPORTED_AUDIO_EXTENSIONS):
+            self._update_status("Unsupported file type. Use m4a/wav/mp3/flac/ogg/opus/aac/mp4/m4b.")
+            return
+
         if not self.transcriber:
             self._update_status("Engine not ready yet.")
             return
 
-        file_name = os.path.basename(file_path)
-        self._update_status(f"Transcribing: {file_name}")
+        language = normalize_language(str(self.languageField.stringValue() or self.selectedLanguage))
+        self.selectedLanguage = language
+        self.languageField.setStringValue_(language)
+        self.transcriber.set_language(language)
+
+        file_name = os.path.basename(normalized_path)
+        self._update_status(f"Transcribing: {file_name} (lang: {self.transcriber.language_label})")
         self._update_text(f"Local processing...\n\nFILE: {file_name}")
-        threading.Thread(target=self._process_audio, args=(file_path,), daemon=True).start()
+        threading.Thread(target=self._process_audio, args=(normalized_path,), daemon=True).start()
 
     @objc.python_method
     def _process_audio(self, file_path):
         result = self.transcriber.transcribe(file_path)
         self._update_text(result)
-        self._update_status("Done. Drop another .m4a file.")
+        self._update_status("Done. Drop another audio file.")
 
     def applicationShouldTerminateAfterLastWindowClosed_(self, sender):
         return True

@@ -6,8 +6,8 @@
 
 STT80 is a local macOS transcription app built with **PyObjC** + **whisper.cpp**.
 
-- Drag and drop `.m4a` files
-- Italian speech transcription (`language="it"`)
+- Drag and drop audio files (`.m4a`, `.wav`, `.mp3`, `.flac`, `.ogg`, `.opus`, `.aac`, `.mp4`, `.m4b`)
+- Any language supported by Whisper (`auto` detect or explicit code like `en`, `es`, `it`, `fr`)
 - Estimated two-speaker turn split
 - Midnight blue liquid-glass UI
 
@@ -23,6 +23,20 @@ Backend selection behavior:
 - `medium-q5` always uses `whisper-cli`
 - non-quantized models try `whisper-cpp-python`, then fallback to `whisper-cli`
 - standalone app bundles prefer `whisper-cli` by design
+
+## Language Selection
+
+STT80 supports multilingual transcription.
+
+- In the app header, set `LANG` to `auto` (recommended) or to a language code (for example: `en`, `es`, `it`, `fr`, `de`, `pt`, `ja`, `zh`).
+- You can set the default with environment variable `STT80_LANGUAGE`.
+
+Examples:
+
+```bash
+STT80_LANGUAGE=auto ./run.sh
+STT80_LANGUAGE=es ./run.sh
+```
 
 ## Requirements
 
@@ -121,7 +135,7 @@ python prepare_dataset.py --dataset-dir ./dataset
 Run benchmark:
 
 ```bash
-python benchmark.py --dataset-dir ./dataset --models tiny,base,small,medium-q5,medium --output-json ./benchmark-report.json
+python benchmark.py --dataset-dir ./dataset --models tiny,base,small,medium-q5,medium --language auto --output-json ./benchmark-report.json
 ```
 
 Metrics:

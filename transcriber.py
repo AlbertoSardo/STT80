@@ -9,6 +9,16 @@ import sys
 import tempfile
 
 
+AUTO_LANGUAGE_VALUES = {"", "auto", "detect", "automatic", "detect-language"}
+
+
+def normalize_language(language_code):
+    value = str(language_code or "").strip().lower()
+    if value in AUTO_LANGUAGE_VALUES:
+        return "auto"
+    return value
+
+
 def runtime_base_dir():
     if getattr(sys, "frozen", False):
         executable_dir = os.path.dirname(os.path.abspath(sys.executable))
@@ -63,7 +73,7 @@ def resolve_model_path(model_reference):
 
 
 class Transcriber:
-    def __init__(self, model_path=None):
+    def __init__(self, model_path=None, language=None):
         requested_model = str(model_path or "ggml-base.bin")
         resolved_model = resolve_model_path(requested_model)
 
@@ -76,6 +86,8 @@ class Transcriber:
             )
 
         self.model_path = resolved_model
+        default_language = os.environ.get("STT80_LANGUAGE", "auto")
+        self.language = normalize_language(default_language if language is None else language)
         self.cpu_threads = max(1, min(8, os.cpu_count() or 4))
         self.model = None
         self.backend = ""
@@ -106,6 +118,15 @@ class Transcriber:
         if self.backend == "cli":
             return "whisper-cli"
         return "whisper-cpp-python"
+
+    @property
+    def language_label(self):
+        if self.language == "auto":
+            return "auto-detect"
+        return self.language
+
+    def set_language(self, language):
+        self.language = normalize_language(language)
 
     def _init_python_backend(self):
         self._configure_whisper_cpp_lib_path()
@@ -251,12 +272,14 @@ class Transcriber:
             raise RuntimeError("Python Whisper backend is not initialized")
 
         with open(wav_path, "rb") as audio_handle:
-            result = self.model.transcribe(
-                audio_handle,
-                language="it",
-                response_format="verbose_json",
-                temperature=0.0,
-            )
+            kwargs = {
+                "response_format": "verbose_json",
+                "temperature": 0.0,
+            }
+            if self.language != "auto":
+                kwargs["language"] = self.language
+
+            result = self.model.transcribe(audio_handle, **kwargs)
 
         data = self._normalize_result(result)
         full_text = str(data.get("text", "")).strip()
@@ -271,7 +294,7 @@ class Transcriber:
                 "-m",
                 self.model_path,
                 "-l",
-                "it",
+                self.language,
                 "-f",
                 wav_path,
                 "-ojf",
