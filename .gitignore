@@ -1,0 +1,17 @@
+venv/
+build/
+dist/
+__pycache__/
+*.pyc
+
+vendor/
+models/
+*.bin
+
+dataset/
+dataset_*/
+benchmark-*.json
+output.log
+release/
+*.zip
+*.sha256

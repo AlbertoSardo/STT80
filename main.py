@@ -1,0 +1,477 @@
+import os
+import threading
+
+import AppKit
+import objc
+
+from transcriber import Transcriber, model_search_dirs, resolve_model_path
+
+
+WINDOW_GLASS_ALPHA = 0.72
+PANEL_GLASS_ALPHA = 0.62
+BACKGROUND_GLASS_ALPHA = 0.82
+
+
+def window_style_mask():
+    def pick(new_name, old_name):
+        value = getattr(AppKit, new_name, None)
+        if value is None:
+            value = getattr(AppKit, old_name)
+        return value
+
+    titled = pick("NSWindowStyleMaskTitled", "NSTitledWindowMask")
+    closable = pick("NSWindowStyleMaskClosable", "NSClosableWindowMask")
+    mini = pick("NSWindowStyleMaskMiniaturizable", "NSMiniaturizableWindowMask")
+    resizable = pick("NSWindowStyleMaskResizable", "NSResizableWindowMask")
+    return int(titled) | int(closable) | int(mini) | int(resizable)
+
+
+class LiquidRootView(AppKit.NSView):
+    delegate = None
+    isDragActive = False
+    dropFrame = AppKit.NSZeroRect
+
+    def draggingEntered_(self, sender):
+        self.isDragActive = True
+        self.setNeedsDisplay_(True)
+        return AppKit.NSDragOperationCopy
+
+    def draggingExited_(self, sender):
+        self.isDragActive = False
+        self.setNeedsDisplay_(True)
+
+    def performDragOperation_(self, sender):
+        self.isDragActive = False
+        self.setNeedsDisplay_(True)
+
+        pasteboard = sender.draggingPasteboard()
+        if pasteboard.types().containsObject_(AppKit.NSPasteboardTypeFileURL):
+            file_url = AppKit.NSURL.URLFromPasteboard_(pasteboard)
+            if file_url:
+                path = str(file_url.path())
+                if path.lower().endswith(".m4a") and self.delegate:
+                    self.delegate.handleDroppedFile_(path)
+                    return True
+        return False
+
+    def drawRect_(self, rect):
+        bounds = self.bounds()
+        gradient = AppKit.NSGradient.alloc().initWithColors_([
+            AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.04, 0.08, 0.18, BACKGROUND_GLASS_ALPHA),
+            AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.06, 0.12, 0.25, BACKGROUND_GLASS_ALPHA),
+            AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.10, 0.20, 0.38, BACKGROUND_GLASS_ALPHA),
+        ])
+        gradient.drawInRect_angle_(bounds, 90.0)
+
+        shine = AppKit.NSGradient.alloc().initWithColors_([
+            AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.78, 0.90, 1.0, 0.26),
+            AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.78, 0.90, 1.0, 0.00),
+        ])
+        shine.drawInRect_angle_(bounds, -90.0)
+
+        if not AppKit.NSEqualRects(self.dropFrame, AppKit.NSZeroRect):
+            glow_color = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.20, 0.64, 1.0, 0.28)
+            border_color = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.54, 0.76, 1.0, 0.82)
+            if self.isDragActive:
+                glow_color = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.26, 0.78, 1.0, 0.44)
+                border_color = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.70, 0.88, 1.0, 0.96)
+
+            glow_color.set()
+            AppKit.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                AppKit.NSInsetRect(self.dropFrame, -8.0, -8.0), 28.0, 28.0
+            ).fill()
+
+            border = AppKit.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                self.dropFrame, 22.0, 22.0
+            )
+            border_color.set()
+            border.setLineWidth_(2.0)
+            border.stroke()
+
+
+def style_glass_panel(panel, corner_radius):
+    panel.setWantsLayer_(True)
+    if panel.layer():
+        panel.layer().setCornerRadius_(corner_radius)
+        panel.layer().setMasksToBounds_(True)
+        panel.layer().setBorderWidth_(1.0)
+        panel.layer().setBackgroundColor_(
+            AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.07, 0.13, 0.24, PANEL_GLASS_ALPHA).CGColor()
+        )
+        panel.layer().setBorderColor_(
+            AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.76, 0.88, 1.0, 0.46).CGColor()
+        )
+
+
+def make_glass_panel(frame):
+    panel = AppKit.NSVisualEffectView.alloc().initWithFrame_(frame)
+    panel.setMaterial_(
+        getattr(AppKit, "NSVisualEffectMaterialUnderWindowBackground", getattr(AppKit, "NSVisualEffectMaterialSidebar", 7))
+    )
+    panel.setBlendingMode_(
+        getattr(AppKit, "NSVisualEffectBlendingModeBehindWindow", getattr(AppKit, "NSVisualEffectBlendingModeWithinWindow", 0))
+    )
+    panel.setState_(getattr(AppKit, "NSVisualEffectStateActive", 1))
+    style_glass_panel(panel, 20.0)
+    return panel
+
+
+class AppDelegate(AppKit.NSObject):
+    window = None
+    rootView = None
+    headerPanel = None
+    transcriptPanel = None
+    textView = None
+    scrollView = None
+    statusField = None
+    modelPopup = None
+    modelLabel = None
+    titleField = None
+    subtitleField = None
+    hintField = None
+    openButton = None
+    copyButton = None
+    saveButton = None
+    transcriber = None
+
+    selectedModelKey = "small"
+    modelOptions = {
+        "tiny": "ggml-tiny.bin",
+        "base": "ggml-base.bin",
+        "small": "ggml-small.bin",
+        "medium-q5": "ggml-medium-q5_0.bin",
+        "medium": "ggml-medium.bin",
+    }
+
+    def applicationDidFinishLaunching_(self, notification):
+        frame = AppKit.NSMakeRect(0, 0, 980, 690)
+        self.window = AppKit.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            frame,
+            window_style_mask(),
+            AppKit.NSBackingStoreBuffered,
+            False,
+        )
+        self.window.setTitle_("STT80 Liquid Glass")
+        self.window.center()
+        self.window.setOpaque_(False)
+        self.window.setBackgroundColor_(AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.05, 0.09, 0.17, WINDOW_GLASS_ALPHA))
+        self.window.setMinSize_(AppKit.NSMakeSize(900, 620))
+        self.window.setDelegate_(self)
+        if hasattr(self.window, "setTitlebarAppearsTransparent_"):
+            self.window.setTitlebarAppearsTransparent_(True)
+        if hasattr(self.window, "setMovableByWindowBackground_"):
+            self.window.setMovableByWindowBackground_(True)
+
+        self.rootView = LiquidRootView.alloc().initWithFrame_(frame)
+        self.rootView.delegate = self
+        self.rootView.registerForDraggedTypes_([AppKit.NSPasteboardTypeFileURL])
+        self.window.setContentView_(self.rootView)
+
+        self._build_layout()
+        self.window.makeKeyAndOrderFront_(None)
+        AppKit.NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+
+        threading.Thread(target=self.loadModel, daemon=True).start()
+
+    def _build_layout(self):
+        width = self.rootView.bounds().size.width
+        height = self.rootView.bounds().size.height
+
+        self.headerPanel = make_glass_panel(AppKit.NSMakeRect(22, height - 108, width - 44, 84))
+        self.headerPanel.setAutoresizingMask_(AppKit.NSViewWidthSizable | AppKit.NSViewMinYMargin)
+        self.rootView.addSubview_(self.headerPanel)
+
+        self.transcriptPanel = make_glass_panel(AppKit.NSMakeRect(22, 22, width - 44, height - 144))
+        self.transcriptPanel.setAutoresizingMask_(AppKit.NSViewWidthSizable | AppKit.NSViewHeightSizable)
+        self.rootView.addSubview_(self.transcriptPanel)
+        self.rootView.dropFrame = self.transcriptPanel.frame()
+
+        self.titleField = AppKit.NSTextField.alloc().initWithFrame_(AppKit.NSMakeRect(22, 42, 430, 24))
+        self.titleField.setEditable_(False)
+        self.titleField.setBordered_(False)
+        self.titleField.setDrawsBackground_(False)
+        self.titleField.setFont_(AppKit.NSFont.fontWithName_size_("SF Pro Display Semibold", 19) or AppKit.NSFont.boldSystemFontOfSize_(19))
+        self.titleField.setTextColor_(AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.92, 0.96, 1.0, 1.0))
+        self.titleField.setStringValue_("STT80 - Local Transcription")
+        self.headerPanel.addSubview_(self.titleField)
+
+        self.subtitleField = AppKit.NSTextField.alloc().initWithFrame_(AppKit.NSMakeRect(22, 20, 430, 18))
+        self.subtitleField.setEditable_(False)
+        self.subtitleField.setBordered_(False)
+        self.subtitleField.setDrawsBackground_(False)
+        self.subtitleField.setFont_(AppKit.NSFont.fontWithName_size_("SF Pro Text", 12) or AppKit.NSFont.systemFontOfSize_(12))
+        self.subtitleField.setTextColor_(AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.72, 0.82, 0.96, 1.0))
+        self.subtitleField.setStringValue_("Drop an Italian .m4a file or use Open...")
+        self.headerPanel.addSubview_(self.subtitleField)
+
+        self.modelLabel = AppKit.NSTextField.alloc().initWithFrame_(AppKit.NSMakeRect(446, 47, 78, 16))
+        self.modelLabel.setEditable_(False)
+        self.modelLabel.setBordered_(False)
+        self.modelLabel.setDrawsBackground_(False)
+        self.modelLabel.setFont_(AppKit.NSFont.fontWithName_size_("SF Pro Text Semibold", 11) or AppKit.NSFont.systemFontOfSize_(11))
+        self.modelLabel.setTextColor_(AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.72, 0.82, 0.96, 1.0))
+        self.modelLabel.setStringValue_("MODEL")
+        self.headerPanel.addSubview_(self.modelLabel)
+
+        self.modelPopup = AppKit.NSPopUpButton.alloc().initWithFrame_pullsDown_(AppKit.NSMakeRect(516, 40, 128, 26), False)
+        self.modelPopup.addItemsWithTitles_(["tiny", "base", "small", "medium-q5", "medium"])
+        self.modelPopup.selectItemWithTitle_(self.selectedModelKey)
+        self.modelPopup.setTarget_(self)
+        self.modelPopup.setAction_(b"modelSelectionChanged:")
+        self.modelPopup.setAutoresizingMask_(AppKit.NSViewMinXMargin | AppKit.NSViewMinYMargin)
+        if hasattr(self.modelPopup, "setContentTintColor_"):
+            self.modelPopup.setContentTintColor_(AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.90, 0.95, 1.0, 1.0))
+        self.headerPanel.addSubview_(self.modelPopup)
+
+        self.openButton = self._make_button(AppKit.NSMakeRect(650, 40, 90, 26), "Open...", b"openFile:")
+        self.copyButton = self._make_button(AppKit.NSMakeRect(746, 40, 90, 26), "Copy", b"copyOutput:")
+        self.saveButton = self._make_button(AppKit.NSMakeRect(842, 40, 90, 26), "Save TXT", b"saveOutput:")
+        self.headerPanel.addSubview_(self.openButton)
+        self.headerPanel.addSubview_(self.copyButton)
+        self.headerPanel.addSubview_(self.saveButton)
+
+        self.statusField = AppKit.NSTextField.alloc().initWithFrame_(AppKit.NSMakeRect(446, 16, 486, 16))
+        self.statusField.setEditable_(False)
+        self.statusField.setBordered_(False)
+        self.statusField.setDrawsBackground_(False)
+        self.statusField.setFont_(AppKit.NSFont.fontWithName_size_("SF Pro Text", 11) or AppKit.NSFont.systemFontOfSize_(11))
+        self.statusField.setTextColor_(AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.72, 0.82, 0.96, 1.0))
+        self.statusField.setStringValue_("Booting engine...")
+        self.statusField.setAutoresizingMask_(AppKit.NSViewMinXMargin | AppKit.NSViewMaxYMargin | AppKit.NSViewWidthSizable)
+        self.headerPanel.addSubview_(self.statusField)
+
+        self.hintField = AppKit.NSTextField.alloc().initWithFrame_(AppKit.NSMakeRect(22, self.transcriptPanel.bounds().size.height - 34, self.transcriptPanel.bounds().size.width - 44, 16))
+        self.hintField.setEditable_(False)
+        self.hintField.setBordered_(False)
+        self.hintField.setDrawsBackground_(False)
+        self.hintField.setAutoresizingMask_(AppKit.NSViewWidthSizable | AppKit.NSViewMinYMargin)
+        self.hintField.setFont_(AppKit.NSFont.fontWithName_size_("SF Pro Text Semibold", 12) or AppKit.NSFont.systemFontOfSize_(12))
+        self.hintField.setTextColor_(AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.76, 0.86, 0.98, 1.0))
+        self.hintField.setStringValue_("Drop Zone: drop your .m4a file here")
+        self.transcriptPanel.addSubview_(self.hintField)
+
+        self.scrollView = AppKit.NSScrollView.alloc().initWithFrame_(
+            AppKit.NSMakeRect(22, 18, self.transcriptPanel.bounds().size.width - 44, self.transcriptPanel.bounds().size.height - 56)
+        )
+        self.scrollView.setAutoresizingMask_(AppKit.NSViewWidthSizable | AppKit.NSViewHeightSizable)
+        self.scrollView.setHasVerticalScroller_(True)
+        self.scrollView.setBorderType_(AppKit.NSNoBorder)
+        self.scrollView.setDrawsBackground_(False)
+
+        size = self.scrollView.contentSize()
+        self.textView = AppKit.NSTextView.alloc().initWithFrame_(AppKit.NSMakeRect(0, 0, size.width, size.height))
+        self.textView.setEditable_(False)
+        self.textView.setVerticallyResizable_(True)
+        self.textView.setHorizontallyResizable_(False)
+        self.textView.setAutoresizingMask_(AppKit.NSViewWidthSizable)
+        self.textView.textContainer().setWidthTracksTextView_(True)
+        self.textView.setBackgroundColor_(AppKit.NSColor.clearColor())
+        self.textView.setTextColor_(AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.92, 0.96, 1.0, 1.0))
+        self.textView.setFont_(AppKit.NSFont.fontWithName_size_("SF Mono", 13) or AppKit.NSFont.userFixedPitchFontOfSize_(13))
+        self.textView.setString_(
+            "STT80 READY\n\n"
+            "Recommended model: small (best speed/quality balance)\n\n"
+            "1) Drop an Italian .m4a voice note\n"
+            "2) Wait for local transcription\n"
+            "3) Get transcript + estimated 2-speaker turns"
+        )
+
+        self.scrollView.setDocumentView_(self.textView)
+        self.transcriptPanel.addSubview_(self.scrollView)
+        self._layout_header_controls()
+
+    def _make_button(self, frame, title, action):
+        button = AppKit.NSButton.alloc().initWithFrame_(frame)
+        button.setTitle_(title)
+        button.setBezelStyle_(getattr(AppKit, "NSBezelStyleRounded", getattr(AppKit, "NSRoundedBezelStyle", 1)))
+        if hasattr(button, "setContentTintColor_"):
+            button.setContentTintColor_(AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.92, 0.96, 1.0, 1.0))
+        button.setTarget_(self)
+        button.setAction_(action)
+        button.setAutoresizingMask_(AppKit.NSViewMinXMargin | AppKit.NSViewMinYMargin)
+        return button
+
+    @objc.python_method
+    def _layout_header_controls(self):
+        if not self.headerPanel:
+            return
+
+        panel_width = self.headerPanel.bounds().size.width
+        inset = 22.0
+        button_width = 90.0
+        spacing = 6.0
+
+        save_x = panel_width - inset - button_width
+        copy_x = save_x - spacing - button_width
+        open_x = copy_x - spacing - button_width
+        popup_x = open_x - 12.0 - 128.0
+        label_x = popup_x - 68.0
+
+        self.modelLabel.setFrame_(AppKit.NSMakeRect(label_x, 47, 60, 16))
+        self.modelPopup.setFrame_(AppKit.NSMakeRect(popup_x, 40, 128, 26))
+        self.openButton.setFrame_(AppKit.NSMakeRect(open_x, 40, button_width, 26))
+        self.copyButton.setFrame_(AppKit.NSMakeRect(copy_x, 40, button_width, 26))
+        self.saveButton.setFrame_(AppKit.NSMakeRect(save_x, 40, button_width, 26))
+
+        status_width = max(180.0, open_x - 14.0 - label_x)
+        self.statusField.setFrame_(AppKit.NSMakeRect(label_x, 16, status_width, 16))
+
+    def windowDidResize_(self, notification):
+        if self.rootView and self.transcriptPanel:
+            self.rootView.dropFrame = self.transcriptPanel.frame()
+            self.rootView.setNeedsDisplay_(True)
+        self._layout_header_controls()
+
+    @objc.python_method
+    def loadModel(self):
+        try:
+            preferred_key = self.selectedModelKey
+
+            model_file = self.modelOptions[preferred_key]
+            model_path = resolve_model_path(model_file)
+
+            if not model_path:
+                fallback_order = ["small", "base", "tiny", "medium", "medium-q5"]
+                fallback_key = None
+                fallback_path = None
+                for candidate in fallback_order:
+                    candidate_file = self.modelOptions[candidate]
+                    candidate_path = resolve_model_path(candidate_file)
+                    if candidate_path:
+                        fallback_key = candidate
+                        fallback_path = candidate_path
+                        break
+
+                if fallback_key and fallback_path:
+                    self.selectedModelKey = fallback_key
+                    self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        b"setModelPopupSelection:", fallback_key, False
+                    )
+                    self._update_status(f"Model '{preferred_key}' not found. Falling back to '{fallback_key}'.")
+                    model_path = fallback_path
+                else:
+                    searched = "\n".join(f"- {path}" for path in model_search_dirs())
+                    raise FileNotFoundError(
+                        f"Missing model: {model_file}\n\nSearched in:\n{searched}"
+                    )
+
+            self.transcriber = Transcriber(model_path=model_path)
+            self._update_status(f"Engine ready ({self.selectedModelKey}, {self.transcriber.backend_label}).")
+        except Exception as exc:
+            self.transcriber = None
+            self._update_status(f"Engine error: {exc}")
+            self._update_text(
+                "Unable to start local Whisper backend.\n\n"
+                "Quick checks:\n"
+                "- pip install whisper-cpp-python\n"
+                "- ffmpeg installed (brew install ffmpeg)\n"
+                "- place ggml-<tiny|base|small|medium-q5|medium>.bin in project/models or ~/Library/Application Support/STT80/models\n"
+                "- for medium-q5: build whisper-cli via ./setup_whisper_cli.sh"
+            )
+
+    def modelSelectionChanged_(self, sender):
+        selected_title = str(sender.titleOfSelectedItem())
+        if selected_title not in self.modelOptions:
+            return
+        self.selectedModelKey = selected_title
+        self.transcriber = None
+        self._update_status(f"Switching model: {self.selectedModelKey}...")
+        threading.Thread(target=self.loadModel, daemon=True).start()
+
+    def copyOutput_(self, sender):
+        text = str(self.textView.string() or "")
+        pasteboard = AppKit.NSPasteboard.generalPasteboard()
+        pasteboard.clearContents()
+        pasteboard.setString_forType_(text, AppKit.NSPasteboardTypeString)
+        self._update_status("Transcript copied to clipboard.")
+
+    def openFile_(self, sender):
+        panel = AppKit.NSOpenPanel.openPanel()
+        panel.setTitle_("Select an audio file")
+        panel.setCanChooseFiles_(True)
+        panel.setCanChooseDirectories_(False)
+        panel.setAllowsMultipleSelection_(False)
+        if hasattr(panel, "setAllowedFileTypes_"):
+            panel.setAllowedFileTypes_(["m4a"])
+
+        result = panel.runModal()
+        ok_value = getattr(AppKit, "NSModalResponseOK", getattr(AppKit, "NSFileHandlingPanelOKButton", 1))
+        if int(result) != int(ok_value):
+            self._update_status("File open canceled.")
+            return
+
+        file_url = panel.URL()
+        if not file_url:
+            self._update_status("File open canceled.")
+            return
+
+        self.handleDroppedFile_(str(file_url.path()))
+
+    def saveOutput_(self, sender):
+        panel = AppKit.NSSavePanel.savePanel()
+        panel.setTitle_("Save transcript")
+        panel.setNameFieldStringValue_("transcript.txt")
+        if hasattr(panel, "setAllowedFileTypes_"):
+            panel.setAllowedFileTypes_(["txt"])
+
+        result = panel.runModal()
+        ok_value = getattr(AppKit, "NSModalResponseOK", getattr(AppKit, "NSFileHandlingPanelOKButton", 1))
+        if int(result) != int(ok_value):
+            self._update_status("Save canceled.")
+            return
+
+        output_url = panel.URL()
+        if not output_url:
+            self._update_status("Save canceled.")
+            return
+
+        output_path = str(output_url.path())
+        try:
+            with open(output_path, "w", encoding="utf-8") as file_handle:
+                file_handle.write(str(self.textView.string() or ""))
+            self._update_status(f"Transcript saved: {os.path.basename(output_path)}")
+        except Exception as exc:
+            self._update_status(f"Save error: {exc}")
+
+    @objc.python_method
+    def _update_status(self, text):
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(b"setStatusText:", text, False)
+
+    @objc.python_method
+    def _update_text(self, text):
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(b"setMainText:", text, False)
+
+    def setStatusText_(self, text):
+        self.statusField.setStringValue_(str(text))
+
+    def setMainText_(self, text):
+        self.textView.setString_(str(text))
+
+    def setModelPopupSelection_(self, model_key):
+        self.modelPopup.selectItemWithTitle_(str(model_key))
+
+    def handleDroppedFile_(self, file_path):
+        if not self.transcriber:
+            self._update_status("Engine not ready yet.")
+            return
+
+        file_name = os.path.basename(file_path)
+        self._update_status(f"Transcribing: {file_name}")
+        self._update_text(f"Local processing...\n\nFILE: {file_name}")
+        threading.Thread(target=self._process_audio, args=(file_path,), daemon=True).start()
+
+    @objc.python_method
+    def _process_audio(self, file_path):
+        result = self.transcriber.transcribe(file_path)
+        self._update_text(result)
+        self._update_status("Done. Drop another .m4a file.")
+
+    def applicationShouldTerminateAfterLastWindowClosed_(self, sender):
+        return True
+
+
+if __name__ == "__main__":
+    app = AppKit.NSApplication.sharedApplication()
+    delegate = AppDelegate.alloc().init()
+    app.setDelegate_(delegate)
+    app.run()

@@ -1,0 +1,42 @@
+name: Build Standalone macOS App
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-macos:
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: Install system dependencies
+        run: |
+          brew install ffmpeg cmake
+
+      - name: Build standalone app
+        run: |
+          chmod +x setup_whisper_cli.sh make_standalone.sh package_release.sh
+          INCLUDE_MODELS=0 ./make_standalone.sh
+
+      - name: Package release zip
+        run: |
+          ./package_release.sh "${GITHUB_REF_NAME:-ci}"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: stt80-macos
+          path: |
+            dist/STT80.app
+            release/*.zip
+            release/*.sha256
