@@ -7,9 +7,14 @@ import objc
 from transcriber import Transcriber, model_search_dirs, normalize_language, resolve_model_path
 
 
-WINDOW_GLASS_ALPHA = 0.72
-PANEL_GLASS_ALPHA = 0.62
-BACKGROUND_GLASS_ALPHA = 0.82
+WINDOW_GLASS_ALPHA = 0.80
+PANEL_GLASS_ALPHA = 0.56
+BACKGROUND_GLASS_ALPHA = 0.92
+INPUT_FILL_ALPHA = 0.26
+INPUT_BORDER_ALPHA = 0.48
+BUTTON_FILL_ALPHA = 0.30
+BUTTON_BORDER_ALPHA = 0.60
+INNER_PANEL_ALPHA = 0.28
 
 SUPPORTED_AUDIO_EXTENSIONS = (
     ".m4a",
@@ -36,7 +41,8 @@ def window_style_mask():
     closable = pick("NSWindowStyleMaskClosable", "NSClosableWindowMask")
     mini = pick("NSWindowStyleMaskMiniaturizable", "NSMiniaturizableWindowMask")
     resizable = pick("NSWindowStyleMaskResizable", "NSResizableWindowMask")
-    return int(titled) | int(closable) | int(mini) | int(resizable)
+    full_size = getattr(AppKit, "NSWindowStyleMaskFullSizeContentView", 0)
+    return int(titled) | int(closable) | int(mini) | int(resizable) | int(full_size)
 
 
 class LiquidRootView(AppKit.NSView):
@@ -70,17 +76,41 @@ class LiquidRootView(AppKit.NSView):
     def drawRect_(self, rect):
         bounds = self.bounds()
         gradient = AppKit.NSGradient.alloc().initWithColors_([
-            AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.04, 0.08, 0.18, BACKGROUND_GLASS_ALPHA),
-            AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.06, 0.12, 0.25, BACKGROUND_GLASS_ALPHA),
-            AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.10, 0.20, 0.38, BACKGROUND_GLASS_ALPHA),
+            AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.01, 0.04, 0.13, BACKGROUND_GLASS_ALPHA),
+            AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.03, 0.09, 0.24, BACKGROUND_GLASS_ALPHA),
+            AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.07, 0.18, 0.39, BACKGROUND_GLASS_ALPHA),
         ])
         gradient.drawInRect_angle_(bounds, 90.0)
 
         shine = AppKit.NSGradient.alloc().initWithColors_([
-            AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.78, 0.90, 1.0, 0.26),
+            AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.88, 0.95, 1.0, 0.30),
             AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.78, 0.90, 1.0, 0.00),
         ])
         shine.drawInRect_angle_(bounds, -90.0)
+
+        orb_left = AppKit.NSMakeRect(
+            -bounds.size.width * 0.24,
+            bounds.size.height * 0.28,
+            bounds.size.width * 0.82,
+            bounds.size.width * 0.82,
+        )
+        orb_left_gradient = AppKit.NSGradient.alloc().initWithColors_([
+            AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.30, 0.66, 1.0, 0.18),
+            AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.30, 0.66, 1.0, 0.00),
+        ])
+        orb_left_gradient.drawInBezierPath_angle_(AppKit.NSBezierPath.bezierPathWithOvalInRect_(orb_left), 90.0)
+
+        orb_right = AppKit.NSMakeRect(
+            bounds.size.width * 0.56,
+            bounds.size.height * 0.08,
+            bounds.size.width * 0.70,
+            bounds.size.width * 0.70,
+        )
+        orb_right_gradient = AppKit.NSGradient.alloc().initWithColors_([
+            AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.58, 0.81, 1.0, 0.14),
+            AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.58, 0.81, 1.0, 0.00),
+        ])
+        orb_right_gradient.drawInBezierPath_angle_(AppKit.NSBezierPath.bezierPathWithOvalInRect_(orb_right), -90.0)
 
         if not AppKit.NSEqualRects(self.dropFrame, AppKit.NSZeroRect):
             glow_color = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.20, 0.64, 1.0, 0.28)
@@ -107,25 +137,59 @@ def style_glass_panel(panel, corner_radius):
     if panel.layer():
         panel.layer().setCornerRadius_(corner_radius)
         panel.layer().setMasksToBounds_(True)
-        panel.layer().setBorderWidth_(1.0)
+        panel.layer().setBorderWidth_(1.2)
         panel.layer().setBackgroundColor_(
-            AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.07, 0.13, 0.24, PANEL_GLASS_ALPHA).CGColor()
+            AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.06, 0.13, 0.27, PANEL_GLASS_ALPHA).CGColor()
         )
         panel.layer().setBorderColor_(
-            AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.76, 0.88, 1.0, 0.46).CGColor()
+            AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.90, 0.96, 1.0, 0.64).CGColor()
         )
 
 
-def make_glass_panel(frame):
+def style_glass_control(control):
+    control.setWantsLayer_(True)
+    if control.layer():
+        control.layer().setCornerRadius_(10.0)
+        control.layer().setBorderWidth_(1.0)
+        control.layer().setBackgroundColor_(
+            AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.08, 0.15, 0.30, INPUT_FILL_ALPHA).CGColor()
+        )
+        control.layer().setBorderColor_(
+            AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.84, 0.93, 1.0, INPUT_BORDER_ALPHA).CGColor()
+        )
+    focus_none = getattr(AppKit, "NSFocusRingTypeNone", None)
+    if focus_none is not None and hasattr(control, "setFocusRingType_"):
+        control.setFocusRingType_(focus_none)
+
+
+def style_glass_button(button):
+    button.setBordered_(False)
+    button.setWantsLayer_(True)
+    if button.layer():
+        button.layer().setCornerRadius_(11.0)
+        button.layer().setBorderWidth_(1.0)
+        button.layer().setBackgroundColor_(
+            AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.10, 0.20, 0.36, BUTTON_FILL_ALPHA).CGColor()
+        )
+        button.layer().setBorderColor_(
+            AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.90, 0.96, 1.0, BUTTON_BORDER_ALPHA).CGColor()
+        )
+
+
+def make_glass_panel(frame, corner_radius=22.0):
     panel = AppKit.NSVisualEffectView.alloc().initWithFrame_(frame)
     panel.setMaterial_(
-        getattr(AppKit, "NSVisualEffectMaterialUnderWindowBackground", getattr(AppKit, "NSVisualEffectMaterialSidebar", 7))
+        getattr(
+            AppKit,
+            "NSVisualEffectMaterialHUDWindow",
+            getattr(AppKit, "NSVisualEffectMaterialUnderWindowBackground", getattr(AppKit, "NSVisualEffectMaterialSidebar", 7)),
+        )
     )
     panel.setBlendingMode_(
         getattr(AppKit, "NSVisualEffectBlendingModeBehindWindow", getattr(AppKit, "NSVisualEffectBlendingModeWithinWindow", 0))
     )
     panel.setState_(getattr(AppKit, "NSVisualEffectStateActive", 1))
-    style_glass_panel(panel, 20.0)
+    style_glass_panel(panel, corner_radius)
     return panel
 
 
@@ -170,11 +234,23 @@ class AppDelegate(AppKit.NSObject):
         self.window.setTitle_("STT80 Liquid Glass")
         self.window.center()
         self.window.setOpaque_(False)
-        self.window.setBackgroundColor_(AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.05, 0.09, 0.17, WINDOW_GLASS_ALPHA))
+        self.window.setBackgroundColor_(AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.03, 0.06, 0.14, WINDOW_GLASS_ALPHA))
         self.window.setMinSize_(AppKit.NSMakeSize(900, 620))
         self.window.setDelegate_(self)
         if hasattr(self.window, "setTitlebarAppearsTransparent_"):
             self.window.setTitlebarAppearsTransparent_(True)
+        if hasattr(self.window, "setTitleVisibility_"):
+            hidden_title = getattr(AppKit, "NSWindowTitleHidden", None)
+            if hidden_title is not None:
+                self.window.setTitleVisibility_(hidden_title)
+        if hasattr(self.window, "setToolbarStyle_"):
+            compact = getattr(
+                AppKit,
+                "NSWindowToolbarStyleUnifiedCompact",
+                getattr(AppKit, "NSWindowToolbarStyleUnified", None),
+            )
+            if compact is not None:
+                self.window.setToolbarStyle_(compact)
         if hasattr(self.window, "setMovableByWindowBackground_"):
             self.window.setMovableByWindowBackground_(True)
 
@@ -193,11 +269,11 @@ class AppDelegate(AppKit.NSObject):
         width = self.rootView.bounds().size.width
         height = self.rootView.bounds().size.height
 
-        self.headerPanel = make_glass_panel(AppKit.NSMakeRect(22, height - 108, width - 44, 84))
+        self.headerPanel = make_glass_panel(AppKit.NSMakeRect(22, height - 108, width - 44, 84), corner_radius=24.0)
         self.headerPanel.setAutoresizingMask_(AppKit.NSViewWidthSizable | AppKit.NSViewMinYMargin)
         self.rootView.addSubview_(self.headerPanel)
 
-        self.transcriptPanel = make_glass_panel(AppKit.NSMakeRect(22, 22, width - 44, height - 144))
+        self.transcriptPanel = make_glass_panel(AppKit.NSMakeRect(22, 22, width - 44, height - 144), corner_radius=26.0)
         self.transcriptPanel.setAutoresizingMask_(AppKit.NSViewWidthSizable | AppKit.NSViewHeightSizable)
         self.rootView.addSubview_(self.transcriptPanel)
         self.rootView.dropFrame = self.transcriptPanel.frame()
@@ -235,8 +311,10 @@ class AppDelegate(AppKit.NSObject):
         self.modelPopup.setTarget_(self)
         self.modelPopup.setAction_(b"modelSelectionChanged:")
         self.modelPopup.setAutoresizingMask_(AppKit.NSViewMinXMargin | AppKit.NSViewMinYMargin)
+        self.modelPopup.setFont_(AppKit.NSFont.fontWithName_size_("SF Pro Text Medium", 12) or AppKit.NSFont.systemFontOfSize_(12))
         if hasattr(self.modelPopup, "setContentTintColor_"):
             self.modelPopup.setContentTintColor_(AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.90, 0.95, 1.0, 1.0))
+        style_glass_control(self.modelPopup)
         self.headerPanel.addSubview_(self.modelPopup)
 
         self.openButton = self._make_button(AppKit.NSMakeRect(650, 40, 90, 26), "Open...", b"openFile:")
@@ -267,6 +345,10 @@ class AppDelegate(AppKit.NSObject):
 
         self.languageField = AppKit.NSTextField.alloc().initWithFrame_(AppKit.NSMakeRect(0, 12, 104, 22))
         self.languageField.setStringValue_(self.selectedLanguage)
+        self.languageField.setDrawsBackground_(False)
+        self.languageField.setTextColor_(AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.92, 0.96, 1.0, 1.0))
+        self.languageField.setFont_(AppKit.NSFont.fontWithName_size_("SF Pro Text Medium", 12) or AppKit.NSFont.systemFontOfSize_(12))
+        style_glass_control(self.languageField)
         if hasattr(self.languageField, "setPlaceholderString_"):
             self.languageField.setPlaceholderString_("auto")
         self.languageField.setTarget_(self)
@@ -292,6 +374,16 @@ class AppDelegate(AppKit.NSObject):
         self.scrollView.setHasVerticalScroller_(True)
         self.scrollView.setBorderType_(AppKit.NSNoBorder)
         self.scrollView.setDrawsBackground_(False)
+        self.scrollView.setWantsLayer_(True)
+        if self.scrollView.layer():
+            self.scrollView.layer().setCornerRadius_(16.0)
+            self.scrollView.layer().setBorderWidth_(1.0)
+            self.scrollView.layer().setBackgroundColor_(
+                AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.09, 0.17, 0.30, INNER_PANEL_ALPHA).CGColor()
+            )
+            self.scrollView.layer().setBorderColor_(
+                AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.86, 0.94, 1.0, 0.40).CGColor()
+            )
 
         size = self.scrollView.contentSize()
         self.textView = AppKit.NSTextView.alloc().initWithFrame_(AppKit.NSMakeRect(0, 0, size.width, size.height))
@@ -319,8 +411,10 @@ class AppDelegate(AppKit.NSObject):
         button = AppKit.NSButton.alloc().initWithFrame_(frame)
         button.setTitle_(title)
         button.setBezelStyle_(getattr(AppKit, "NSBezelStyleRounded", getattr(AppKit, "NSRoundedBezelStyle", 1)))
+        button.setFont_(AppKit.NSFont.fontWithName_size_("SF Pro Text Semibold", 12) or AppKit.NSFont.systemFontOfSize_(12))
         if hasattr(button, "setContentTintColor_"):
             button.setContentTintColor_(AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.92, 0.96, 1.0, 1.0))
+        style_glass_button(button)
         button.setTarget_(self)
         button.setAction_(action)
         button.setAutoresizingMask_(AppKit.NSViewMinXMargin | AppKit.NSViewMinYMargin)

@@ -11,6 +11,10 @@ STT80 is a local macOS transcription app built with **PyObjC** + **whisper.cpp**
 - Estimated two-speaker turn split
 - Midnight blue liquid-glass UI
 
+## Screenshot
+
+![STT80 liquid glass UI](assets/screen1.png)
+
 ## Backends
 
 STT80 can run with two local backends:
